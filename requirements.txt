@@ -1,0 +1,4 @@
+# Installed by the platform at session boot (pip install -r requirements.txt).
+langgraph>=0.2
+langchain-core>=0.3
+langchain-openai>=0.2

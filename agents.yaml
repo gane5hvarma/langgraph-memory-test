@@ -1,0 +1,24 @@
+# Agent spec for DigitalOcean Managed Agents (flat agents.yaml format).
+#
+#   doctl harness-runtime validate agents.yaml
+#   doctl harness-runtime create agents.yaml
+
+name: langgraph-memory-test     # session names are unique per team
+agent: langgraph
+template: langgraph
+size: mars-2vcpu-4gb
+
+langgraph:
+  framework:
+    repo: https://github.com/gane5hvarma/langgraph-memory-test.git
+    repo_sha: "REPO_SHA"        # a pushed commit that has langgraph.json
+
+# Optional: without these the agent answers without a model, which is enough
+# for the memory test. Uncomment both blocks to chat with a model, and pass
+# --secret HARNESS_INFERENCE_API_KEY=@path at create.
+# env:
+#   HARNESS_INFERENCE_BASE_URL: https://inference.do-ai.run/v1
+#   HARNESS_INFERENCE_MODEL: anthropic-claude-4.5-sonnet
+# secrets:
+#   HARNESS_INFERENCE_API_KEY:
+#     source: tenantSecret
