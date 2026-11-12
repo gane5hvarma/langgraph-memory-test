@@ -14,6 +14,12 @@ is gone and `turns` starts again at 1.
 - **`/history`** (no model call): replies with the `thread_id`, the turn
   number, the Agent Server pid and every earlier user message. Use it before
   and after a restart.
+- **`/env`** or **`printenv`** (no model call), optionally with a name prefix
+  (`/env TEST_`): replies with the Agent Server pid and the environment that
+  process started with. Values of names containing `KEY`, `TOKEN`, `SECRET`,
+  `PASSWORD`, `PASSWD`, `CREDENTIAL` or `AUTH` are shown as
+  `<redacted len=N sha256=XXXXXXXX>`, so a rotation is visible without the
+  value. Use test values only: a short value can be guessed from 8 hex digits.
 - **Anything else:** if `HARNESS_INFERENCE_*` is set, the message goes to the
   model with the whole history, so "what is my secret word?" works.
   Otherwise the agent replies deterministically, with the turn and thread and
@@ -39,6 +45,29 @@ configured, `what is my secret word?` answers `pineapple`.
 
 A restart of OHR alone leaves the Agent Server running, so its pid stays the
 same.
+
+## Test: a live env or secret update
+
+A `PATCH /v2/agents/sessions/{id}` with `env` or `secrets` restarts the Agent
+Server (the whole workload nest) and then OHR, on the new environment.
+
+1. Create a session and send `my secret word is pineapple`.
+2. Send `/env TEST_` (nothing listed yet) and `/history` (note the pid).
+3. PATCH the session: `env` with `TEST_FLAG: hello`, `secrets` with
+   `TEST_SECRET: s3cret-v1`. Keep every existing key, since a section sent
+   replaces the whole section.
+4. Wait for the session to leave `UPDATING`; `session.update.state` should be
+   `APPLIED_RESTARTED`.
+5. Send `/env TEST_` and `/history`.
+
+**Update reached the graph:** `TEST_FLAG=hello` and `TEST_SECRET=<redacted
+len=9 …>` are listed, and the Agent Server pid has changed.
+
+**Memory kept across it:** `/history` shows the same `thread_id` and lists
+`my secret word is pineapple`.
+
+Rotate the secret with a second PATCH (`TEST_SECRET: s3cret-v2`): the
+`sha256=` changes and the length stays 9.
 
 ## Deploy
 
