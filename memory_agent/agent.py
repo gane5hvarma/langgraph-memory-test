@@ -15,6 +15,11 @@ the Agent Server's own environment, also without the model. It is the env this
 process started with, so it shows whether a live env or secret update reached
 the graph. Values of secret-looking names are masked.
 
+Send `/tools` for the tools the `do.actions` Action Gateway advertises to this
+graph, listed with its own MCP client from HARNESS_MCP_URL_DO_ACTIONS. The URL
+is read on every call, so after a live tools update it shows the gateway
+version the restarted Agent Server was handed.
+
 With HARNESS_INFERENCE_* set, other messages go to the model with the whole
 history (so "what is my secret word?" works). Without them the agent answers
 deterministically, which is enough to test memory without an API key.
@@ -22,6 +27,8 @@ deterministically, which is enough to test memory without an API key.
 
 # No `from __future__ import annotations`: LangGraph reads the state
 # TypedDict's annotations at runtime.
+import asyncio
+import concurrent.futures
 import hashlib
 import operator
 import os
@@ -112,6 +119,41 @@ def _env_report(prefix: str = "") -> str:
     return "\n".join(lines)
 
 
+DO_ACTIONS_URL_ENV = "HARNESS_MCP_URL_DO_ACTIONS"
+
+
+async def _list_gateway_tools(url: str) -> list[str]:
+    """The tool names the Action Gateway advertises in tools/list."""
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    client = MultiServerMCPClient({"do_actions": {"url": url, "transport": "streamable_http"}})
+    return sorted(tool.name for tool in await client.get_tools())
+
+
+def _run_async(coro, timeout: float = 60):
+    """Run coro to completion from this sync node, in a thread of its own so
+    it works whether or not the caller already has an event loop running."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result(timeout=timeout)
+
+
+def _tools_report() -> str:
+    url = os.environ.get(DO_ACTIONS_URL_ENV, "").strip()
+    lines = [f"agent server pid: {os.getpid()}"]
+    if not url:
+        lines.append(f"do.actions is not attached ({DO_ACTIONS_URL_ENV} is unset)")
+        return "\n".join(lines)
+    lines.append(f"do_actions url: {url}")
+    try:
+        names = _run_async(_list_gateway_tools(url))
+    except Exception as e:  # report it; a failed listing must not fail the turn
+        lines.append(f"could not list tools: {type(e).__name__}: {e}")
+        return "\n".join(lines)
+    lines.append(f"tools: {len(names)}")
+    lines += [f"  - {name}" for name in names]
+    return "\n".join(lines)
+
+
 def chat(state: State, config: RunnableConfig) -> dict:
     turn = state.get("turns", 0) + 1
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
@@ -123,6 +165,8 @@ def chat(state: State, config: RunnableConfig) -> dict:
         reply = _history_report(state, turn, thread_id)
     elif command in ("/env", "printenv"):
         reply = _env_report(words[1].strip() if len(words) > 1 else "")
+    elif command == "/tools":
+        reply = _tools_report()
     elif llm is not None:
         reply = llm.invoke([SystemMessage(SYSTEM_PROMPT), *state["messages"]]).content
     else:

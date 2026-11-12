@@ -20,6 +20,10 @@ is gone and `turns` starts again at 1.
   `PASSWORD`, `PASSWD`, `CREDENTIAL` or `AUTH` are shown as
   `<redacted len=N sha256=XXXXXXXX>`, so a rotation is visible without the
   value. Use test values only: a short value can be guessed from 8 hex digits.
+- **`/tools`** (no model call): lists the tools the `do.actions` Action
+  Gateway advertises, with the graph's own MCP client
+  (`langchain-mcp-adapters`) on `HARNESS_MCP_URL_DO_ACTIONS`, plus that URL and
+  the Agent Server pid. Says so when `do.actions` is not attached.
 - **Anything else:** if `HARNESS_INFERENCE_*` is set, the message goes to the
   model with the whole history, so "what is my secret word?" works.
   Otherwise the agent replies deterministically, with the turn and thread and
@@ -68,6 +72,27 @@ len=9 …>` are listed, and the Agent Server pid has changed.
 
 Rotate the secret with a second PATCH (`TEST_SECRET: s3cret-v2`): the
 `sha256=` changes and the length stays 9.
+
+## Test: a live tools update (`do.actions`)
+
+The platform does not wire MCP servers into a LangGraph graph; the graph
+connects to `HARNESS_MCP_URL_DO_ACTIONS` itself. A change to the `do.actions`
+selection gives the session a new, version-pinned gateway URL, so the Agent
+Server is restarted onto it.
+
+1. Create a session with `tools: [{do.actions: [web_search]}]` (see the
+   commented block in `agents.yaml`). A framework agent's selection is
+   advertised directly, up to 10 tools, next to the gateway's meta-tools.
+2. Send `/tools` (meta-tools plus `web_search`) and note the `do_actions url`
+   (`…/version/<n>`) and the pid.
+3. PATCH the session with `tools:\n  - do.actions: [web_search, execute_code]\n`
+   as its `manifest_yaml`, as the user who created the session.
+4. Wait for `session.update.state` `APPLIED_RESTARTED`.
+5. Send `/tools` and `/history`.
+
+**Update reached the graph:** `execute_code` is listed, the URL ends in a new
+`/version/<n+1>`, and the pid changed. **Memory kept:** `/history` still lists
+the earlier messages.
 
 ## Deploy
 

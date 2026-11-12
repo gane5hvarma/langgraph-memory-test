@@ -22,3 +22,9 @@ langgraph:
 # secrets:
 #   HARNESS_INFERENCE_API_KEY:
 #     source: tenantSecret
+
+# Optional: attach the Action Gateway for the /tools test. The selection is
+# advertised to the graph directly (up to 10 tools); change it on the running
+# session with a PATCH to test a live tools update.
+# tools:
+#   - do.actions: [web_search]

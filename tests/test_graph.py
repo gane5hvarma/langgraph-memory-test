@@ -60,3 +60,39 @@ def test_env_shows_a_rotation_without_the_value(monkeypatch):
 def test_env_with_an_unknown_prefix_says_so():
     report = say("t6", "/env NO_SUCH_PREFIX_")
     assert "(no variable starts with 'NO_SUCH_PREFIX_')" in report
+
+
+def test_tools_without_do_actions_says_so(monkeypatch):
+    monkeypatch.delenv("HARNESS_MCP_URL_DO_ACTIONS", raising=False)
+    report = say("t7", "/tools")
+    assert "do.actions is not attached" in report
+
+
+def test_tools_lists_what_the_gateway_advertises(monkeypatch):
+    from memory_agent import agent
+
+    seen = {}
+
+    async def fake_list(url):
+        seen["url"] = url
+        return ["action_invoke", "action_search", "web_search"]
+
+    monkeypatch.setenv("HARNESS_MCP_URL_DO_ACTIONS", "https://ag.example/mcp/endpoint/e1/version/2")
+    monkeypatch.setattr(agent, "_list_gateway_tools", fake_list)
+    report = say("t8", "/tools")
+    assert seen["url"] == "https://ag.example/mcp/endpoint/e1/version/2"
+    assert "do_actions url: https://ag.example/mcp/endpoint/e1/version/2" in report
+    assert "tools: 3" in report
+    assert "  - web_search" in report
+
+
+def test_tools_reports_a_listing_failure_without_failing_the_turn(monkeypatch):
+    from memory_agent import agent
+
+    async def boom(url):
+        raise ConnectionError("gateway unreachable")
+
+    monkeypatch.setenv("HARNESS_MCP_URL_DO_ACTIONS", "https://ag.example/mcp")
+    monkeypatch.setattr(agent, "_list_gateway_tools", boom)
+    report = say("t9", "/tools")
+    assert "could not list tools: ConnectionError: gateway unreachable" in report
