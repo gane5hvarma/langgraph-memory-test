@@ -8,6 +8,7 @@ import os
 for k in ("HARNESS_INFERENCE_MODEL", "HARNESS_INFERENCE_BASE_URL", "HARNESS_INFERENCE_API_KEY"):
     os.environ.pop(k, None)
 
+from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from langgraph.checkpoint.memory import MemorySaver  # noqa: E402
 
 from memory_agent.agent import workflow  # noqa: E402
@@ -16,11 +17,15 @@ graph = workflow.compile(checkpointer=MemorySaver())
 
 
 def say(thread: str, text: str) -> str:
+    """The turn's reply as the session shows it: every AI message after the
+    user's, joined."""
     out = graph.invoke(
         {"messages": [("user", text)]},
         {"configurable": {"thread_id": thread}},
     )
-    return out["messages"][-1].content
+    messages = out["messages"]
+    start = max(i for i, m in enumerate(messages) if isinstance(m, HumanMessage)) + 1
+    return "".join(m.content for m in messages[start:] if isinstance(m, AIMessage))
 
 
 def test_a_thread_remembers_earlier_turns():
@@ -195,3 +200,38 @@ def test_notion_arguments_follow_a_nested_schema():
     args = _append_arguments(schema, "p1", "hi")
     assert args["path"] == {"block_id": "p1"}
     assert args["body"]["children"][0]["type"] == "paragraph"
+
+
+def test_every_reply_ends_with_the_model_line():
+    assert say("m1", "hello").endswith("\n\ncurrently I'm using model: none (HARNESS_INFERENCE_MODEL is unset)")
+    assert say("m1", "/history").endswith("currently I'm using model: none (HARNESS_INFERENCE_MODEL is unset)")
+
+
+def test_the_model_line_says_when_inference_is_half_configured(monkeypatch):
+    monkeypatch.setenv("HARNESS_INFERENCE_MODEL", "kimi-k3")
+    report = say("m2", "/env NO_SUCH_PREFIX_")
+    assert report.endswith("currently I'm using model: none (kimi-k3 is set, but inference is not fully configured)")
+
+
+class FakeLLM:
+    model_name = "kimi-k3"
+
+    def __init__(self):
+        self.prompts = []
+
+    def invoke(self, messages):
+        self.prompts.append(messages)
+        return AIMessage("the answer", response_metadata={"model_name": "kimi-k3-0711"})
+
+
+def test_a_model_reply_is_sent_once_with_the_model_line(monkeypatch):
+    from memory_agent import agent
+
+    fake = FakeLLM()
+    monkeypatch.setattr(agent, "llm", fake)
+    first = say("m3", "what is 2+2?")
+    assert first == "the answer\n\ncurrently I'm using model: kimi-k3 (reply from: kimi-k3-0711)"
+    say("m3", "and 3+3?")
+    # The model line stays out of the model's prompt.
+    assert not any("currently I'm using model" in str(m.content) for m in fake.prompts[-1])
+    assert any(m.content == "the answer" for m in fake.prompts[-1])

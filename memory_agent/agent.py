@@ -29,6 +29,9 @@ action_invoke.
 With HARNESS_INFERENCE_* set, other messages go to the model with the whole
 history (so "what is my secret word?" works). Without them the agent answers
 deterministically, which is enough to test memory without an API key.
+
+Every reply ends with "currently I'm using model: <name>", so a live switch of
+HARNESS_INFERENCE_MODEL shows on the next turn.
 """
 
 # No `from __future__ import annotations`: LangGraph reads the state
@@ -291,6 +294,29 @@ def _notion_report(text: str) -> str:
     return "\n".join(lines)
 
 
+MODEL_LINE_NAME = "model_line"
+
+
+def _model_line(answer: AIMessage | None = None) -> AIMessage:
+    """The line after every reply: the model this Agent Server was started
+    with, and for a model reply the model the endpoint says answered.
+
+    A message of its own, so the model's streamed tokens are not re-sent, and
+    named so it is left out of the model's prompt.
+    """
+    configured = os.environ.get("HARNESS_INFERENCE_MODEL", "").strip()
+    if llm is not None:
+        line = f"currently I'm using model: {getattr(llm, 'model_name', None) or configured}"
+        served = (answer.response_metadata or {}).get("model_name") if answer is not None else None
+        if served:
+            line += f" (reply from: {served})"
+    elif configured:
+        line = f"currently I'm using model: none ({configured} is set, but inference is not fully configured)"
+    else:
+        line = "currently I'm using model: none (HARNESS_INFERENCE_MODEL is unset)"
+    return AIMessage(f"\n\n{line}", name=MODEL_LINE_NAME)
+
+
 def chat(state: State, config: RunnableConfig) -> dict:
     turn = state.get("turns", 0) + 1
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
@@ -307,14 +333,19 @@ def chat(state: State, config: RunnableConfig) -> dict:
     elif command == "/notion":
         reply = _notion_report(words[1].strip() if len(words) > 1 else "")
     elif llm is not None:
-        reply = llm.invoke([SystemMessage(SYSTEM_PROMPT), *state["messages"]]).content
+        prompt = [m for m in state["messages"] if getattr(m, "name", None) != MODEL_LINE_NAME]
+        answer = llm.invoke([SystemMessage(SYSTEM_PROMPT), *prompt])
+        # Returned as is: its id matches the streamed tokens, so the reply is
+        # not sent twice, and it keeps the usage and model name the platform
+        # records.
+        return {"messages": [answer, _model_line(answer)], "turns": 1}
     else:
         earlier = sum(isinstance(m, HumanMessage) for m in state["messages"][:-1])
         reply = (
             f"Turn {turn} on thread {thread_id}. You said: {last!r}. "
             f"I remember {earlier} earlier message(s); send /history to list them."
         )
-    return {"messages": [AIMessage(reply)], "turns": 1}
+    return {"messages": [AIMessage(reply), _model_line()], "turns": 1}
 
 
 workflow = StateGraph(State)

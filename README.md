@@ -34,6 +34,10 @@ is gone and `turns` starts again at 1.
   how many earlier messages it remembers. You can test memory without an API
   key.
 
+Every reply ends with `currently I'm using model: <name>`: the
+`HARNESS_INFERENCE_MODEL` the Agent Server started with, and for a model reply
+`(reply from: <name>)`, the model the inference endpoint says answered.
+
 ## Test: memory across an OHR restart
 
 1. Create a session from `agents.yaml` (set `repo_sha` first; see below).
@@ -76,6 +80,19 @@ len=9 …>` are listed, and the Agent Server pid has changed.
 
 Rotate the secret with a second PATCH (`TEST_SECRET: s3cret-v2`): the
 `sha256=` changes and the length stays 9.
+
+## Test: a live model switch
+
+1. Create a session with a model (`HARNESS_INFERENCE_*` set) and send
+   `my secret word is pineapple`. The reply ends with
+   `currently I'm using model: <old> (reply from: <old>)`.
+2. PATCH the session's `env` with a new `HARNESS_INFERENCE_MODEL`, keeping the
+   other keys.
+3. Wait for `session.update.state` `APPLIED_RESTARTED`.
+4. Send `what is my secret word?`.
+
+**Switched:** the reply ends with `currently I'm using model: <new> (reply
+from: <new>)`, and it answers `pineapple`, so the memory survived the restart.
 
 ## Test: a live tools update (`do.actions`)
 
