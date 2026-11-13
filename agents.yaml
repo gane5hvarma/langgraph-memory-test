@@ -11,7 +11,7 @@ size: mars-2vcpu-4gb
 langgraph:
   framework:
     repo: https://github.com/gane5hvarma/langgraph-memory-test.git
-    repo_sha: "0b97c46b9954068a18ef1863b15899f3fda7f0d2"        # a pushed commit that has langgraph.json
+    repo_sha: "f5408774b93029440bb811c97779403cb2f2d8dc"        # a pushed commit that has langgraph.json
 
 # Optional: without these the agent answers without a model, which is enough
 # for the memory test. Uncomment both blocks to chat with a model, and pass
