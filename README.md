@@ -24,6 +24,10 @@ is gone and `turns` starts again at 1.
   Gateway advertises, with the graph's own MCP client
   (`langchain-mcp-adapters`) on `HARNESS_MCP_URL_DO_ACTIONS`, plus that URL and
   the Agent Server pid. Says so when `do.actions` is not attached.
+- **`/notion <text>`** (no model call): appends a paragraph with `<text>` to
+  the Notion page `NOTION_PAGE_ID` (an id or a page URL) through a Notion
+  toolbelt on `do.actions`, and replies with the new block id. **`/notion`**
+  alone lists the Notion tools the session can reach and the one it would use.
 - **Anything else:** if `HARNESS_INFERENCE_*` is set, the message goes to the
   model with the whole history, so "what is my secret word?" works.
   Otherwise the agent replies deterministically, with the turn and thread and
@@ -93,6 +97,36 @@ Server is restarted onto it.
 **Update reached the graph:** `execute_code` is listed, the URL ends in a new
 `/version/<n+1>`, and the pid changed. **Memory kept:** `/history` still lists
 the earlier messages.
+
+## Test: write to Notion through a toolbelt
+
+A toolbelt is not advertised in the graph's `tools/list` (only the gateway's
+`action_search` / `action_invoke` meta-tools are), so `/notion` finds the
+append tool with `action_search` and calls it through `action_invoke`. The
+call runs on your Notion connection, so the page must be one that connection
+can edit.
+
+1. Create a session with the toolbelt and the page (see the commented block in
+   `agents.yaml`; use your toolbelt's name and version):
+
+   ```yaml
+   tools:
+     - do.actions: ["toolbelt:notion@1"]
+   env:
+     NOTION_PAGE_ID: https://www.notion.so/My-test-page-0123456789abcdef0123456789abcdef
+   ```
+
+   Create warns that the graph sees only the meta-tools; that is expected.
+2. Send `/notion`: the toolbelt's Notion tools are listed with their
+   arguments, and `append tool:` names the one `/notion <text>` uses.
+3. Send `/notion hello from langgraph`.
+
+**Written:** `status: succeeded` and `new block: <id>`, and the paragraph is
+at the bottom of the page. A `gateway: requires_authorization` line means the
+Notion connection is missing or lacks a scope.
+
+If `append tool:` is wrong or empty, set `NOTION_APPEND_TOOL` to the tool's
+name. To write to another page, PATCH `env` with a new `NOTION_PAGE_ID`.
 
 ## Deploy
 

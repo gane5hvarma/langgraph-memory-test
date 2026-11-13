@@ -20,6 +20,12 @@ graph, listed with its own MCP client from HARNESS_MCP_URL_DO_ACTIONS. The URL
 is read on every call, so after a live tools update it shows the gateway
 version the restarted Agent Server was handed.
 
+Send `/notion <text>` to append a paragraph to the Notion page NOTION_PAGE_ID
+through a Notion toolbelt on `do.actions`, or `/notion` alone to list the
+Notion tools the session can reach. A toolbelt is not advertised in tools/list,
+so the graph finds the append tool with action_search and calls it through
+action_invoke.
+
 With HARNESS_INFERENCE_* set, other messages go to the model with the whole
 history (so "what is my secret word?" works). Without them the agent answers
 deterministically, which is enough to test memory without an API key.
@@ -30,8 +36,10 @@ deterministically, which is enough to test memory without an API key.
 import asyncio
 import concurrent.futures
 import hashlib
+import json
 import operator
 import os
+import re
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -154,6 +162,135 @@ def _tools_report() -> str:
     return "\n".join(lines)
 
 
+NOTION_PAGE_ENV = "NOTION_PAGE_ID"
+NOTION_TOOL_ENV = "NOTION_APPEND_TOOL"
+NOTION_USE_CASE = "Append a paragraph block to the end of an existing Notion page"
+
+
+async def _gateway_call(url: str, name: str, arguments: dict) -> dict:
+    """Call one gateway tool and return its structured result."""
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    client = MultiServerMCPClient({"do_actions": {"url": url, "transport": "streamable_http"}})
+    async with client.session("do_actions") as session:
+        result = await session.call_tool(name, arguments)
+    text = "".join(getattr(c, "text", "") for c in result.content)
+    if result.isError:
+        raise RuntimeError(f"{name} failed: {text[:500]}")
+    if result.structuredContent is not None:
+        return result.structuredContent
+    return json.loads(text)
+
+
+def _search_notion_tools(url: str) -> list[dict]:
+    """The Notion tools action_search finds in this session's selection (the
+    toolbelt), each with its name, version and inputSchema."""
+    query = {"queries": [{"use_case": NOTION_USE_CASE}], "limit": 10}
+    resp = _run_async(_gateway_call(url, "action_search", query))
+    return [t for group in resp.get("results", []) for t in group.get("results", [])]
+
+
+def _pick_append_tool(tools: list[dict]) -> dict | None:
+    """NOTION_APPEND_TOOL when set, else the first tool that appends blocks."""
+    wanted = os.environ.get(NOTION_TOOL_ENV, "").strip()
+    if wanted:
+        return next((t for t in tools if t.get("name") == wanted), {"name": wanted})
+    for t in tools:
+        if "append" in t.get("name", "").lower():
+            return t
+    for t in tools:
+        name = t.get("name", "").lower()
+        if "children" in name and any(verb in name for verb in ("patch", "add", "create", "update")):
+            return t
+    return None
+
+
+def _page_id(value: str) -> str:
+    """A Notion page id, also from a page URL (the last 32 hex digits of its path)."""
+    tail = value.strip().split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+    tail = tail.replace("-", "").lower()[-32:]
+    return tail if re.fullmatch(r"[0-9a-f]{32}", tail) else value.strip()
+
+
+def _place(props: dict, names: tuple, value, args: dict) -> None:
+    """Put value under the first of names the schema has, at the top level or in
+    a path/body group, else under names[0]."""
+    for name in names:
+        if name in props:
+            args[name] = value
+            return
+    for group in ("path", "body", "params", "path_params"):
+        sub = (props.get(group) or {}).get("properties") or {}
+        for name in names:
+            if name in sub:
+                args.setdefault(group, {})[name] = value
+                return
+    args[names[0]] = value
+
+
+def _append_arguments(schema: dict | None, page_id: str, text: str) -> dict:
+    """Arguments for Notion's append-block-children call, laid out as the
+    tool's inputSchema names them."""
+    props = (schema or {}).get("properties") or {}
+    paragraph = {"rich_text": [{"type": "text", "text": {"content": text}}]}
+    args: dict = {}
+    _place(props, ("block_id", "page_id", "id", "blockId", "pageId"), page_id, args)
+    _place(props, ("children",), [{"object": "block", "type": "paragraph", "paragraph": paragraph}], args)
+    return args
+
+
+def _notion_report(text: str) -> str:
+    url = os.environ.get(DO_ACTIONS_URL_ENV, "").strip()
+    lines = [f"agent server pid: {os.getpid()}"]
+    if not url:
+        lines.append(f"do.actions is not attached ({DO_ACTIONS_URL_ENV} is unset)")
+        return "\n".join(lines)
+    page = _page_id(os.environ.get(NOTION_PAGE_ENV, ""))
+    lines.append(f"notion page: {page or f'(unset; set {NOTION_PAGE_ENV})'}")
+    try:
+        tools = _search_notion_tools(url)
+        tool = _pick_append_tool(tools)
+        if not text:
+            lines.append(f"notion tools found: {len(tools)}")
+            for t in tools:
+                args = ", ".join(sorted(((t.get("inputSchema") or {}).get("properties") or {})))
+                lines.append(f"  - {t.get('name')}@{t.get('version', '?')} ({args})")
+            lines.append(f"append tool: {tool['name'] if tool else f'(none found; set {NOTION_TOOL_ENV})'}")
+            return "\n".join(lines)
+        if not page:
+            lines.append(f"nothing written: set {NOTION_PAGE_ENV}")
+            return "\n".join(lines)
+        if not tool:
+            lines.append(f"nothing written: no append tool found; set {NOTION_TOOL_ENV}")
+            return "\n".join(lines)
+        call = {"tool": tool["name"], "arguments": _append_arguments(tool.get("inputSchema"), page, text)}
+        if tool.get("version"):
+            call["version"] = tool["version"]
+        lines.append(f"tool: {tool['name']}@{tool.get('version', '?')}")
+        invoke = {"rationale": "Append a paragraph to a Notion page", "tools": [call]}
+        resp = _run_async(_gateway_call(url, "action_invoke", invoke))
+    except Exception as e:  # report it; a failed call must not fail the turn
+        lines.append(f"notion call failed: {type(e).__name__}: {e}")
+        return "\n".join(lines)
+    result = (resp.get("results") or [{}])[0].get("result") or {}
+    lines.append(f"status: {result.get('status', '?')}")
+    meta = result.get("_meta") or {}
+    if meta.get("status"):
+        lines.append(f"gateway: {meta['status']}")
+    error = result.get("error") or {}
+    if error:
+        hint = f" ({error['recovery_hint']})" if error.get("recovery_hint") else ""
+        lines.append(f"error: {error.get('class', '?')}: {error.get('message', '')}{hint}")
+    output = result.get("output")
+    # Notion answers an append with the new blocks under "results".
+    blocks = output.get("results") if isinstance(output, dict) else None
+    if isinstance(blocks, list) and blocks:
+        lines += [f"new block: {b.get('id')}" for b in blocks if isinstance(b, dict)]
+    elif output is not None:
+        lines.append(f"output: {json.dumps(output)[:300]}")
+    return "\n".join(lines)
+
+
 def chat(state: State, config: RunnableConfig) -> dict:
     turn = state.get("turns", 0) + 1
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
@@ -167,6 +304,8 @@ def chat(state: State, config: RunnableConfig) -> dict:
         reply = _env_report(words[1].strip() if len(words) > 1 else "")
     elif command == "/tools":
         reply = _tools_report()
+    elif command == "/notion":
+        reply = _notion_report(words[1].strip() if len(words) > 1 else "")
     elif llm is not None:
         reply = llm.invoke([SystemMessage(SYSTEM_PROMPT), *state["messages"]]).content
     else:

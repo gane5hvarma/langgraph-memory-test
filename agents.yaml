@@ -28,3 +28,11 @@ langgraph:
 # session with a PATCH to test a live tools update.
 # tools:
 #   - do.actions: [web_search]
+
+# Optional: a Notion toolbelt for /notion (use your toolbelt's name and
+# version, in place of the do.actions entry above). Put NOTION_PAGE_ID in the
+# env block above if you use both.
+# tools:
+#   - do.actions: ["toolbelt:notion@1"]
+# env:
+#   NOTION_PAGE_ID: https://www.notion.so/My-test-page-0123456789abcdef0123456789abcdef

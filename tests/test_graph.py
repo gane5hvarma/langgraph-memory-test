@@ -96,3 +96,102 @@ def test_tools_reports_a_listing_failure_without_failing_the_turn(monkeypatch):
     monkeypatch.setattr(agent, "_list_gateway_tools", boom)
     report = say("t9", "/tools")
     assert "could not list tools: ConnectionError: gateway unreachable" in report
+
+
+APPEND_SCHEMA = {"type": "object", "properties": {"block_id": {"type": "string"}, "children": {"type": "array"}}}
+SEARCH_RESULT = {
+    "results": [
+        {
+            "index": 1,
+            "use_case": "append",
+            "results": [
+                {"name": "notion_retrieve_block_children", "version": "1", "inputSchema": {"properties": {"block_id": {}}}},
+                {"name": "notion_append_block_children", "version": "2", "inputSchema": APPEND_SCHEMA},
+            ],
+        }
+    ]
+}
+PAGE_URL = "https://www.notion.so/team/Test-page-0123456789abcdef0123456789abcdef"
+
+
+def fake_gateway(monkeypatch, invoke_result):
+    from memory_agent import agent
+
+    calls = []
+
+    async def call(url, name, arguments):
+        calls.append((name, arguments))
+        return SEARCH_RESULT if name == "action_search" else {"results": [{"index": 0, "result": invoke_result}]}
+
+    monkeypatch.setenv("HARNESS_MCP_URL_DO_ACTIONS", "https://ag.example/mcp")
+    monkeypatch.setattr(agent, "_gateway_call", call)
+    return calls
+
+
+def test_notion_without_do_actions_says_so(monkeypatch):
+    monkeypatch.delenv("HARNESS_MCP_URL_DO_ACTIONS", raising=False)
+    assert "do.actions is not attached" in say("n1", "/notion hello")
+
+
+def test_notion_alone_lists_the_tools_and_writes_nothing(monkeypatch):
+    monkeypatch.setenv("NOTION_PAGE_ID", PAGE_URL)
+    calls = fake_gateway(monkeypatch, {})
+    report = say("n2", "/notion")
+    assert [name for name, _ in calls] == ["action_search"]
+    assert "notion tools found: 2" in report
+    assert "  - notion_append_block_children@2 (block_id, children)" in report
+    assert "append tool: notion_append_block_children" in report
+
+
+def test_notion_appends_a_paragraph_to_the_page(monkeypatch):
+    monkeypatch.setenv("NOTION_PAGE_ID", PAGE_URL)
+    monkeypatch.delenv("NOTION_APPEND_TOOL", raising=False)
+    calls = fake_gateway(monkeypatch, {"status": "succeeded", "output": {"object": "list", "results": [{"id": "b1"}]}})
+    report = say("n3", "/notion hello from langgraph")
+    name, invoke = calls[-1]
+    assert name == "action_invoke"
+    call = invoke["tools"][0]
+    assert (call["tool"], call["version"]) == ("notion_append_block_children", "2")
+    assert call["arguments"]["block_id"] == "0123456789abcdef0123456789abcdef"
+    rich_text = call["arguments"]["children"][0]["paragraph"]["rich_text"]
+    assert rich_text[0]["text"]["content"] == "hello from langgraph"
+    assert "status: succeeded" in report
+    assert "new block: b1" in report
+
+
+def test_notion_reports_a_tool_error(monkeypatch):
+    monkeypatch.setenv("NOTION_PAGE_ID", "0123456789abcdef0123456789abcdef")
+    fake_gateway(
+        monkeypatch,
+        {
+            "status": "failed",
+            "error": {"class": "unauthorized", "message": "connect Notion first", "recovery_hint": "refresh_auth"},
+            "_meta": {"status": "requires_authorization"},
+        },
+    )
+    report = say("n4", "/notion hello")
+    assert "status: failed" in report
+    assert "gateway: requires_authorization" in report
+    assert "error: unauthorized: connect Notion first (refresh_auth)" in report
+
+
+def test_notion_without_a_page_writes_nothing(monkeypatch):
+    monkeypatch.delenv("NOTION_PAGE_ID", raising=False)
+    calls = fake_gateway(monkeypatch, {})
+    report = say("n5", "/notion hello")
+    assert "nothing written: set NOTION_PAGE_ID" in report
+    assert "action_invoke" not in [name for name, _ in calls]
+
+
+def test_notion_arguments_follow_a_nested_schema():
+    from memory_agent.agent import _append_arguments
+
+    schema = {
+        "properties": {
+            "path": {"type": "object", "properties": {"block_id": {}}},
+            "body": {"type": "object", "properties": {"children": {}}},
+        }
+    }
+    args = _append_arguments(schema, "p1", "hi")
+    assert args["path"] == {"block_id": "p1"}
+    assert args["body"]["children"][0]["type"] == "paragraph"
